@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from dataset import paired_paths, resolve_root
 from model import LiteIE
+from losses import ZeroDCELoss
 
 
 class TrainingTests(unittest.TestCase):
@@ -37,18 +38,59 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(len(paired_paths(root, 'Train')), 4)
             output = Path(tmp)/'run'
             base = [sys.executable, str(ROOT/'train.py'), '--dataset-root', tmp, '--device', 'cpu',
-                    '--workers', '0', '--crop-size', '16', '--batch-size', '2', '--output-dir', str(output)]
+                    '--workers', '0', '--image-size', '16', '--batch-size', '2', '--output-dir', str(output)]
+            # Removing every Train/Normal image must not prevent training.
+            for image in (root/'Train'/'Normal').iterdir():
+                image.unlink()
+            (root/'Train'/'Normal').rmdir()
             subprocess.run(base+['--check-data'], check=True)
             subprocess.run(base+['--epochs', '1'], check=True)
             # Resume into a new output location, as when moving Kaggle sessions.
             resumed = Path(tmp)/'resumed'
             subprocess.run(base+['--output-dir', str(resumed), '--epochs', '2', '--resume', str(output/'last.pt')], check=True)
             self.assertEqual(len(json.loads((resumed/'history.json').read_text())), 2)
-            self.assertTrue((resumed/'best.pth').exists())
+            self.assertTrue((resumed/'final.pth').exists())
             self.assertEqual(json.loads((resumed/'test_metrics.json').read_text())['test_images'], 2)
-            (root/'Train'/'Normal'/'normal00000.png').unlink()
+            # The train manifest includes all low-light inputs; no validation/GT.
+            manifest = json.loads((resumed/'splits.json').read_text())
+            self.assertEqual(len(manifest['train']), 4)
+            self.assertNotIn('validation', manifest)
+            # Resume is identical to uninterrupted CPU training at epoch boundaries.
+            full = Path(tmp)/'full'
+            subprocess.run(base+['--output-dir', str(full), '--epochs', '2'], check=True)
+            a = torch.load(resumed/'final.pth', weights_only=True)
+            b = torch.load(full/'final.pth', weights_only=True)
+            self.assertTrue(all(torch.equal(a[k], b[k]) for k in a))
+            # Completed checkpoints can rerun evaluation (interrupted Kaggle export).
+            subprocess.run(base+['--output-dir', str(resumed), '--epochs', '2', '--resume', str(resumed/'last.pt')], check=True)
+            legacy = Path(tmp)/'legacy.pt'
+            torch.save({'config': {'lr': .0001}}, legacy)
+            failed = subprocess.run(base+['--output-dir', str(Path(tmp)/'reject'), '--resume', str(legacy)], capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn('Incompatible checkpoint recipe', failed.stderr)
+            (root/'Test'/'Normal'/'normal00000.png').unlink()
             with self.assertRaises(ValueError):
-                paired_paths(root, 'Train')
+                paired_paths(root, 'Test')
+
+    def test_loss_constants_and_finite_gray_gradients(self):
+        objective = ZeroDCELoss()
+        low = torch.full((2, 3, 16, 16), .2)
+        enhanced = low.clone().requires_grad_()
+        curves = torch.zeros_like(low, requires_grad=True)
+        total, parts = objective(low, enhanced, curves)
+        self.assertAlmostEqual(parts['exposure'].item(), 1.6, places=5)
+        for name in ('tv', 'spatial', 'color'):
+            self.assertEqual(parts[name].item(), 0.)
+        total.backward()
+        self.assertTrue(torch.isfinite(enhanced.grad).all())
+        self.assertTrue(torch.isfinite(curves.grad).all())
+
+    def test_tv_channel_normalization(self):
+        image = torch.full((1, 3, 16, 16), .6)
+        curve = torch.arange(16.).view(1,1,16,1).expand(1,3,16,16)
+        _, parts = ZeroDCELoss()(image, image, curve)
+        # Three channels, vertical difference 1, TV = 2 * 3, weight = 200.
+        self.assertAlmostEqual(parts['tv'].item(), 1200.)
 
     def test_notebook_cells_compile(self):
         notebook = json.loads((ROOT/'notebooks/train_liteie_lolv2_kaggle.ipynb').read_text())

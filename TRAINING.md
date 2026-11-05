@@ -1,64 +1,70 @@
-# Train LiteIE trên LOLv2 / Kaggle
+# LiteIE + Zero-DCE trên LOLv2 Real / Kaggle
 
-Đây là **supervised L1 baseline bổ sung**, không phải code training chính thức hay cam kết tái lập số liệu paper. Giữ nguyên 58 tham số của model, sửa quy tắc số vòng enhancement để tính riêng từng ảnh trong batch. Không dùng pretrained weights khi bắt đầu run mới.
+Dùng **model LiteIE + training/loss Zero-DCE theo hướng dẫn tạm của tác giả**. Đây không phải loss LiteIE mới trong paper. Nguồn, commit và phần chưa công bố: [TRAINING_SOURCES.md](TRAINING_SOURCES.md).
 
-## Kaggle
+## Chạy Kaggle
 
-1. Upload `notebooks/train_liteie_lolv2_kaggle.ipynb` vào Kaggle.
-2. Bật GPU và Internet, Add Input dataset LOLv2.
-3. Sửa `DATASET_ROOT` và Run All. Repo GitHub cần truy cập được từ Kaggle.
+1. Import `notebooks/train_liteie_lolv2_kaggle.ipynb`.
+2. Bật GPU và Internet; Add Input LOLv2.
+3. Sửa duy nhất `DATASET_ROOT`, rồi Run All.
 
-Notebook clone https://github.com/mluu59990-collab/LiteIE.git và in commit để truy vết. Nếu thư mục clone đã tồn tại, notebook sử dụng checkout hiện tại.
+Notebook clone https://github.com/mluu59990-collab/LiteIE.git (repo cần truy cập được từ Kaggle), cập nhật fast-forward nếu đã có checkout, in commit sử dụng và kiểm tra dataset trước khi train.
 
-Có thể truyền thư mục chứa LOLv2 hoặc trực tiếp `Real_captured`. Loader tìm đúng một subset, không phân biệt hoa thường ở tên thư mục:
+`DATASET_ROOT` có thể là thư mục chứa LOLv2 hoặc trực tiếp `Real_captured`:
 
 ```
-LOLv2/
-  Real_captured/
-    Train/
-      Low/low00001.png
-      Normal/normal00001.png
-    Test/
-      Low/low00690.png
-      Normal/normal00690.png
+LOLv2/Real_captured/
+  Train/Low/low00001.png
+  Test/Low/low00690.png
+  Test/Normal/normal00690.png
 ```
 
-Ảnh ghép theo tên (bỏ tiền tố `low`/`normal`), không ghép theo thứ tự. Tên trùng, thiếu cặp, lỗi ảnh và sai kích thước sẽ báo lỗi. Crop không resize ảnh; crop quá lớn sẽ báo lỗi.
+**Train/Normal không cần có và không được đọc.** Tất cả Train/Low được dùng để train. Không random crop/flip, không tách validation. Test không được dùng chọn checkpoint; chỉ đánh giá model ở epoch cuối. Tên cặp Test được ghép theo tên (bỏ tiền tố low/normal), không theo vị trí sắp xếp.
 
-## Tham số
+## Cấu hình mặc định lấy từ Zero-DCE
 
-| Tham số | Mặc định | Ý nghĩa |
-|---|---|---|
-| `--dataset-root` | bắt buộc | Đường dẫn dataset |
-| `--variant` | `real` | `real` hoặc `synthetic` |
-| `--epochs` | 200 | Tổng epoch, kể cả khi resume |
-| `--batch-size` | 8 | Số cặp ảnh trong batch |
-| `--crop-size` | 256 | Crop vuông, đồng bộ low/normal |
-| `--lr` | 0.0001 | Adam, learning rate cố định |
-| `--seed` | 42 | Seed split, khởi tạo và augmentation |
-| `--val-fraction` | 0.1 | Tách 10% Train để chọn best checkpoint |
-| `--workers` | 2 | DataLoader workers |
-| `--device` | `cuda` | `cpu` dành cho smoke test |
-| `--output-dir` | `/kaggle/working/liteie-output` | Thư mục ghi kết quả |
-| `--resume` | không | Đường dẫn `last.pt` do pipeline tạo |
-| `--check-data` | tắt | Chỉ kiểm tra dataset rồi thoát |
+| Tham số | Mặc định |
+|---|---|
+| `--epochs` | 200 |
+| `--batch-size` | 8 |
+| `--image-size` | 256: resize Lanczos thành 256x256 |
+| Optimizer | Adam, betas=(0.9,0.999), eps=1e-8 |
+| `--lr` | 1e-4, cố định |
+| `--weight-decay` | 1e-4 |
+| `--grad-clip` | 0.1 |
+| `--workers` | 4 |
+| Khởi tạo convolution weight | Normal(0,0.02), bias mặc định PyTorch |
+| Loss | 200 × TV(curve) + spatial + 5 × color + 10 × exposure |
+| Exposure | Gray average pool 16x16, target 0.6 |
+| Spatial | Gray average pool 4x4, sai khác 4 hướng |
 
-Ví dụ:
+`--dataset-root` bắt buộc. `--variant real` mặc định, có hỗ trợ `synthetic`. `--seed 42` là bổ sung để tái lập, không phải seed training chính thức LiteIE. `--device cuda` mặc định; CPU dùng cho smoke test. Không nạp pretrained khi bắt đầu run mới.
+
+Giữ cách chuẩn hóa TV của Zero-DCE: cộng theo channel và chuẩn hóa spatial/batch. LiteIE có **một RGB curve dùng chung**; dùng trực tiếp tensor 3-channel này, không tự nhân thành 24 channel. Cấu trúc LiteIE không bị đổi thành Zero-DCE. `net(x)` vẫn trả ảnh; `net(x, return_curves=True)` trả thêm curve phục vụ loss. Số vòng enhancement tính riêng từng ảnh để không phụ thuộc ảnh khác trong batch; đây là điều chỉnh của repo này so với upstream.
 
 ```bash
 python train.py --dataset-root /kaggle/input/lolv2 --check-data
 python train.py --dataset-root /kaggle/input/lolv2
-python train.py --dataset-root /kaggle/input/lolv2 --resume /kaggle/working/liteie-output/last.pt
+python train.py --dataset-root /kaggle/input/lolv2 --resume /kaggle/working/liteie-zero-dce-output/last.pt
 ```
 
-Train dùng L1 trên RGB [0,1], random crop và flip đồng bộ, clip gradient norm 1.0, FP32, một GPU. Không dùng Test để chọn checkpoint. Validation và Test chạy từng ảnh nguyên kích thước. PSNR được tính trên RGB [0,1], trung bình theo ảnh; không chỉnh brightness bằng ground truth. Chưa tính SSIM/LPIPS trong pipeline này.
+## Kết quả và resume
 
-## Kết quả / resume
+Mặc định ghi vào `/kaggle/working/liteie-zero-dce-output`:
 
-- `best.pth`: state dict tương thích `model.LiteIE`, dùng được bằng cách đổi `MODEL_PATH` trong inference gốc.
-- `last.pt`: model, optimizer, best model, epoch, lịch sử và cấu hình.
-- `config.json`, `splits.json`, `history.json`, `test_metrics.json` lưu cấu hình và kết quả.
+- `last.pt`: lưu sau mỗi epoch, gồm model/optimizer, epoch, recipe, lịch sử và manifest.
+- `final.pth`: state dict ở epoch cuối, dùng được trong inference gốc bằng cách đổi `MODEL_PATH`.
+- `config.json`, `splits.json`, `history.json`: cấu hình, tên ảnh và loss có trọng số theo epoch.
+- `test_metrics.json`: RGB PSNR của checkpoint cuối, trung bình theo ảnh nguyên kích thước [0,1]; không chỉnh brightness bằng GT. Chưa có SSIM/LPIPS trong pipeline train.
 
-Notebook zip output thành `/kaggle/working/liteie-results.zip`. Lưu output trước khi session Kaggle kết thúc. Khi chuyển session, Add Input output cũ rồi đặt `RESUME` tới `last.pt`; đường dẫn dataset được phép đổi nhưng tên cặp và split phải giữ nguyên. Resume giữ cấu hình train và seed theo epoch; không cam kết bitwise giống giữa các GPU/phần mềm khác nhau.
+Notebook tạo ZIP kết quả. Lưu output trước khi session kết thúc. Để resume sau khi đổi session, Add Input output cũ và đặt `RESUME` tới `last.pt`. Đường dẫn dataset có thể đổi, tên ảnh/manifest và cấu hình training phải giữ nguyên. `--epochs` là tổng epoch, không phải số epoch bổ sung. Resume checkpoint đã hoàn tất cho phép tạo lại final weights và đánh giá nếu session bị ngắt sau epoch cuối.
 
-Các mặc định là điểm khởi đầu, cần tune bằng validation. Để so sánh ba method công bằng, dùng cùng split, cùng protocol metric và cùng chính sách chọn checkpoint.
+**Không resume checkpoint từ bản supervised L1 cũ.** Recipe khác sẽ báo lỗi; bắt đầu run mới trong thư mục output mới. Thí nghiệm cũ không được xem là kết quả của cấu hình này.
+
+## Kiểm thử
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Các test CPU nhỏ kiểm tra loss, gradient, train không cần Train/Normal, resume, từ chối checkpoint L1 và tương thích checkpoint/model. Không thay thế training đầy đủ trên LOLv2/GPU Kaggle.

@@ -1,9 +1,8 @@
 """Paired LOLv2 loading; never pair images by sorted position."""
 from pathlib import Path
-import random
 import re
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 import torch
 from torch.utils.data import Dataset
 
@@ -53,9 +52,32 @@ def paired_paths(root, split):
     return [(low[k], normal[k]) for k in sorted(low)]
 
 
+def lowlight_paths(root):
+    folder = child(child(root, 'Train'), 'Low')
+    paths = sorted(p for p in folder.iterdir() if p.suffix.lower() in EXTENSIONS)
+    if not paths:
+        raise ValueError(f'No training images in {folder}')
+    return paths
+
+
+class LowLightImages(Dataset):
+    """Zero-DCE preprocessing: resize, RGB [0,1], no crop/flip or GT access."""
+    def __init__(self, paths, image_size=256):
+        self.paths, self.image_size = paths, image_size
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, index):
+        with Image.open(self.paths[index]) as image:
+            image = image.convert('RGB').resize((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+            return torch.from_numpy(np.asarray(image)/255.0).float().permute(2, 0, 1)
+
+
 class PairedImages(Dataset):
-    def __init__(self, pairs, crop_size=None):
-        self.pairs, self.crop_size = pairs, crop_size
+    """Full-resolution evaluation only."""
+    def __init__(self, pairs):
+        self.pairs = pairs
 
     def __len__(self):
         return len(self.pairs)
@@ -68,15 +90,4 @@ class PairedImages(Dataset):
                 images.append(image.convert('RGB'))
         if images[0].size != images[1].size:
             raise ValueError(f'Pair dimensions differ: {paths}')
-        size = self.crop_size
-        if size:
-            w, h = images[0].size
-            if min(w, h) < size:
-                raise ValueError(f'Image smaller than crop {size}: {paths[0]} ({w}x{h})')
-            x, y = random.randint(0, w-size), random.randint(0, h-size)
-            images = [im.crop((x, y, x+size, y+size)) for im in images]
-            if random.random() < .5:
-                images = [ImageOps.mirror(im) for im in images]
-            if random.random() < .5:
-                images = [ImageOps.flip(im) for im in images]
         return tuple(torch.from_numpy(np.array(im, dtype=np.float32)/255).permute(2, 0, 1) for im in images)

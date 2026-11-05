@@ -14,7 +14,7 @@ class LiteIE(nn.Module):
             nn.Conv2d(bottleneck_channels, 3, 3, padding=1, bias=True)
         )
 
-    def forward(self, x):
+    def forward(self, x, return_curves=False):
 
         x1 = self.relu(self.shared_conv(x))
         x2 = self.relu(self.shared_conv(x1))
@@ -27,4 +27,4 @@ class LiteIE(nn.Module):
         for iteration in range(int(steps.max().item())):
             updated = x + curves * (x*x - x)
             x = torch.where((steps > iteration)[:, None, None, None], updated, x)
-        return x
+        return (x, curves) if return_curves else x
