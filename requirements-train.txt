@@ -1,0 +1,4 @@
+# Kaggle supplies CUDA-enabled torch; do not reinstall it in the notebook.
+torch>=2.0
+numpy>=1.24
+Pillow>=9.0

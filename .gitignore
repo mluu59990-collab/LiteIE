@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.ipynb_checkpoints/
+.venv/
+outputs/
+liteie-output/
+*.pt
+*.pth
+!snapshots/epoth_199.pth
+data/
