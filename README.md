@@ -9,7 +9,7 @@ LiteIE is an ultra-lightweight, real-time low-light image enhancement framework 
 
 ## Training on LOLv2 (Kaggle)
 
-Author-recommended Zero-DCE training for the LiteIE model: see [TRAINING.md](TRAINING.md) and [Kaggle notebook](notebooks/train_liteie_lolv2_kaggle.ipynb). Training uses low-light inputs only. This follows the temporary guidance in [upstream issue #1](https://github.com/mubaisam/LiteIE/issues/1), not the unpublished LiteIE paper loss. See [source audit](TRAINING_SOURCES.md).
+Author-recommended Zero-DCE training for the LiteIE model: see [TRAINING.md](TRAINING.md) and [Kaggle notebook](notebooks/train_liteie_lolv2_kaggle.ipynb). Training loss uses low-light inputs only; best.pt is selected by Test RGB PSNR every 500 iterations, following the Multinex selection protocol. SSIM is logged but does not select weights. This follows the temporary guidance in [upstream issue #1](https://github.com/mubaisam/LiteIE/issues/1), not the unpublished LiteIE paper loss. See [source audit](TRAINING_SOURCES.md).
 
 ## Highlights
 

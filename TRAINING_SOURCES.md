@@ -51,9 +51,18 @@ These are verified **Zero-DCE defaults**, recommended as a runnable fallback by 
 
 - Keep the published LiteIE network (58 parameters), expose its one shared RGB curve for TV loss; do not duplicate it into Zero-DCE's 24-channel curve tensor.
 - Compute iteration counts per image instead of using the upstream batch-wide brightness mean.
-- Use all LOLv2 Real Train/Low images, including PNG; no Train/Normal, validation split or paired training loss.
-- Use final-epoch weights for test evaluation; do not select weights on the test set.
+- Use all LOLv2 Real Train/Low for optimization; never read Train/Normal. No held-out split or paired training loss.
+- Select best.pt by strictly increasing Test RGB PSNR every 500 optimizer steps, as requested following Multinex. Log SSIM of the same checkpoint; it is not a selection criterion. Test is therefore not independent of selection.
 - Add seed=42, epoch-based resume, recipe checks, per-epoch checkpoints and logs. These are engineering additions, not claimed author settings.
 - Modernize PIL ANTIALIAS to LANCZOS and device placement. Color loss uses vector_norm of squared color differences, mathematically equivalent to the upstream expression with finite gradients at exactly gray inputs.
 
-Validation: five CPU tests passed, including low-only training, resume equivalence, legacy-checkpoint rejection and notebook syntax. Separately compared all four weighted loss components and gradients against the pinned upstream Myloss.py on random 2x3x32x32 tensors; all matched within torch.testing.assert_close tolerances. Only upstream hardcoded CUDA allocation was changed to CPU for that comparison. Full LOLv2 training on Kaggle has not been run here.
+Validation: six CPU tests passed, including all-low training, PSNR-only selection and resume equivalence, legacy-checkpoint rejection and notebook syntax. Separately compared all four weighted loss components and gradients against the pinned upstream Myloss.py on random 2x3x32x32 tensors; all matched within torch.testing.assert_close tolerances. Only upstream hardcoded CUDA allocation was changed to CPU for that comparison. Full LOLv2 training on Kaggle has not been run here.
+
+## Multinex checkpoint selection audit
+
+Verified against public code on 2026-11-05:
+- https://github.com/albrateanu/multinex/blob/main/Options/Multinex_LOL-v2-real.yaml : validation uses Real_captured/Test; val_freq=500, only PSNR enabled, crop_border=0, test_y_channel=false, use_image=false.
+- https://github.com/albrateanu/multinex/blob/main/basicsr/train.py : update only when current metric exceeds best PSNR.
+- https://github.com/albrateanu/multinex/blob/main/basicsr/models/image_restoration_model.py : delete previous best and save best weights. Its validation returns the last metric; this implementation explicitly selects metrics['psnr'] so logging SSIM cannot change selection.
+
+Local adaptations: fixed output name best.pt (plain state dict); preserve resume checkpoint each epoch; SSIM is additionally logged using RGB Gaussian 11x11 sigma=1.5, valid region. If a short run never reaches an evaluation interval, evaluate once at its final step so a best.pt exists. Other runs select only on scheduled evaluation steps. Training/loss remains Zero-DCE, not Multinex.

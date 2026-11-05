@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from dataset import paired_paths, resolve_root
 from model import LiteIE
 from losses import ZeroDCELoss
+import train
 
 
 class TrainingTests(unittest.TestCase):
@@ -27,7 +29,8 @@ class TrainingTests(unittest.TestCase):
 
     def test_train_resume_and_pair_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)/'Real_captured'
+            root = Path(tmp)/'LOLv2'/'Real_captured'
+            (Path(tmp)/'LOLv2'/'Synthetic'/'Train').mkdir(parents=True)
             for split, count in [('Train', 4), ('Test', 2)]:
                 for folder, prefix, value in [('Low', 'low', 30), ('Normal', 'normal', 120)]:
                     directory = root/split/folder
@@ -38,10 +41,9 @@ class TrainingTests(unittest.TestCase):
             self.assertEqual(len(paired_paths(root, 'Train')), 4)
             output = Path(tmp)/'run'
             base = [sys.executable, str(ROOT/'train.py'), '--dataset-root', tmp, '--device', 'cpu',
-                    '--workers', '0', '--image-size', '16', '--batch-size', '2', '--output-dir', str(output)]
-            # Removing every Train/Normal image must not prevent training.
-            for image in (root/'Train'/'Normal').iterdir():
-                image.unlink()
+                    '--workers', '0', '--eval-every', '2', '--image-size', '16', '--batch-size', '2', '--output-dir', str(output)]
+            for path in (root/'Train'/'Normal').iterdir():
+                path.unlink()
             (root/'Train'/'Normal').rmdir()
             subprocess.run(base+['--check-data'], check=True)
             subprocess.run(base+['--epochs', '1'], check=True)
@@ -49,18 +51,35 @@ class TrainingTests(unittest.TestCase):
             resumed = Path(tmp)/'resumed'
             subprocess.run(base+['--output-dir', str(resumed), '--epochs', '2', '--resume', str(output/'last.pt')], check=True)
             self.assertEqual(len(json.loads((resumed/'history.json').read_text())), 2)
-            self.assertTrue((resumed/'final.pth').exists())
+            self.assertTrue((resumed/'best.pt').exists())
             self.assertEqual(json.loads((resumed/'test_metrics.json').read_text())['test_images'], 2)
-            # The train manifest includes all low-light inputs; no validation/GT.
             manifest = json.loads((resumed/'splits.json').read_text())
             self.assertEqual(len(manifest['train']), 4)
             self.assertNotIn('validation', manifest)
+            metrics = json.loads((resumed/'test_metrics.json').read_text())
+            evaluations = json.loads((resumed/'evaluations.json').read_text())
+            self.assertEqual(metrics['best_psnr_rgb'], max(row['psnr'] for row in evaluations))
             # Resume is identical to uninterrupted CPU training at epoch boundaries.
             full = Path(tmp)/'full'
             subprocess.run(base+['--output-dir', str(full), '--epochs', '2'], check=True)
-            a = torch.load(resumed/'final.pth', weights_only=True)
-            b = torch.load(full/'final.pth', weights_only=True)
+            a = torch.load(resumed/'best.pt', weights_only=True)
+            b = torch.load(full/'best.pt', weights_only=True)
             self.assertTrue(all(torch.equal(a[k], b[k]) for k in a))
+            # Force epoch 1 to win: Test must receive its weights, not epoch 2.
+            selected = Path(tmp)/'selected'
+            observed = []
+            def metric(net, loader, device):
+                observed.append({k: v.detach().cpu().clone() for k,v in net.state_dict().items()})
+                return [{'psnr': 30., 'ssim': .8}, {'psnr': 20., 'ssim': .9}, {'psnr': 30., 'ssim': .8}][len(observed)-1]
+            with patch.object(sys, 'argv', base[1:]+['--output-dir', str(selected), '--epochs', '2']), patch.object(train, 'evaluate', side_effect=metric):
+                train.main()
+            saved = torch.load(selected/'best.pt', weights_only=True)
+            self.assertTrue(all(torch.equal(saved[k], observed[0][k]) for k in saved))
+            self.assertTrue(all(torch.equal(observed[2][k], observed[0][k]) for k in saved))
+            self.assertTrue(any(not torch.equal(observed[1][k], saved[k]) for k in saved))
+            selected_metrics = json.loads((selected/'test_metrics.json').read_text())
+            self.assertEqual(selected_metrics['epoch'], 1)
+            self.assertEqual(selected_metrics['ssim_at_best_psnr'], .8)
             # Completed checkpoints can rerun evaluation (interrupted Kaggle export).
             subprocess.run(base+['--output-dir', str(resumed), '--epochs', '2', '--resume', str(resumed/'last.pt')], check=True)
             legacy = Path(tmp)/'legacy.pt'
@@ -84,6 +103,16 @@ class TrainingTests(unittest.TestCase):
         total.backward()
         self.assertTrue(torch.isfinite(enhanced.grad).all())
         self.assertTrue(torch.isfinite(curves.grad).all())
+
+    def test_metrics_identity(self):
+        image = torch.rand(1, 3, 16, 16)
+        self.assertAlmostEqual(train.rgb_ssim(image, image), 1., places=10)
+        self.assertLess(train.rgb_ssim(image, image*.5), 1.)
+        net = torch.nn.Identity().train()
+        result = train.evaluate(net, [(image, image)], torch.device('cpu'))
+        self.assertTrue(net.training)
+        self.assertEqual(result['psnr'], float('inf'))
+        self.assertAlmostEqual(result['ssim'], 1.)
 
     def test_tv_channel_normalization(self):
         image = torch.full((1, 3, 16, 16), .6)
